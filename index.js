@@ -220,6 +220,9 @@ const createPeopleKeyboard = (userId, format) => {
   const total = st.buttonIds.length;
   if (!total) return { keyboard: kb, currentSelection: "Нет данных" };
 
+  // (опционально) кнопка ручного обновления списка людей
+  // kb.text("🔄 Обновить людей", "refresh_names").row();
+
   const page = st.currentPage || 0;
   const start = page * BUTTONS_PER_PAGE;
   const end = Math.min(start + BUTTONS_PER_PAGE, total);
@@ -246,27 +249,38 @@ const createPeopleKeyboard = (userId, format) => {
 
   kb.text("⬅️ Вернуться", "back_to_location").text("ГОТОВО ✅", "done");
 
+  // ---------- РЕЗЮМЕ ВЫБОРА С КОЛ-ВОМ ----------
   let currentSelection =
     `<b>Введенные данные:</b>\n` +
     `📅 Дата: ${esc(st.selectedDate || "---")}\n` +
     `🤸 Тип тренировки: ${esc(st.selectedFormat || "---")}`;
-  if (st.selectedFormat !== "ds")
+
+  if (st.selectedFormat !== "ds") {
     currentSelection += `\n📍 Место: ${esc(st.selectedLocation || "---")}`;
+  }
 
   if (st.selectedFormat === "ds") {
-    const picked = Object.entries(st.buttonCounters)
+    const pickedList = Object.entries(st.buttonCounters)
       .filter(([, v]) => v > 0)
       .map(
         ([id, v]) =>
           `${v}x ${st.buttonIds.find((x) => x.id === id)?.name || "?"}`
       );
-    currentSelection += `\n👥 Люди: ${esc(picked.join(", ") || "---")}`;
+    const totalCount = Object.values(st.buttonCounters).reduce(
+      (a, b) => a + (b || 0),
+      0
+    );
+    currentSelection += `\n🔢 Кол-во: ${totalCount}`;
+    currentSelection += `\n👥 Люди: ${esc(pickedList.join(", ") || "---")}`;
   } else {
-    const picked = Object.entries(st.buttonStates)
+    const pickedNames = Object.entries(st.buttonStates)
       .filter(([, v]) => !!v)
       .map(([id]) => st.buttonIds.find((x) => x.id === id)?.name || "?");
-    currentSelection += `\n👥 Люди: ${esc(picked.join(", ") || "---")}`;
+    const totalCount = pickedNames.length;
+    currentSelection += `\n🔢 Кол-во: ${totalCount}`;
+    currentSelection += `\n👥 Люди: ${esc(pickedNames.join(", ") || "---")}`;
   }
+  // ----------------------------------------------
 
   return { keyboard: kb, currentSelection };
 };
