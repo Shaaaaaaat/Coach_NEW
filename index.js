@@ -898,8 +898,35 @@ const initBot = async () => {
       console.error("Unknown error:", err);
     }
   });
-
-  bot.start();
 };
 
-initBot();
+(async () => {
+  await initBot();
+
+  const mode = (process.env.BOT_MODE || "polling").toLowerCase();
+
+  if (mode === "polling") {
+    // На всякий случай: отключаем вебхук и чистим висящие апдейты,
+    // чтобы исключить 409 и конфликты режимов.
+    await bot.api.deleteWebhook({ drop_pending_updates: true });
+    await bot.start();
+    console.log("Bot started in POLLING mode");
+  } else if (mode === "webhook") {
+    const express = require("express");
+    const { webhookCallback } = require("grammy");
+
+    const app = express();
+    app.use(express.json());
+
+    const url = process.env.WEBHOOK_URL;
+    if (!url) throw new Error("WEBHOOK_URL is required in WEBHOOK mode");
+
+    await bot.api.setWebhook({ url });
+    app.use("/webhook", webhookCallback(bot, "express"));
+
+    const port = process.env.PORT || 3000;
+    app.listen(port, () => console.log("Bot started in WEBHOOK mode on", port));
+  } else {
+    throw new Error(`Unknown BOT_MODE: ${mode}`);
+  }
+})();
