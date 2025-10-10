@@ -41,6 +41,18 @@ const BUTTONS_PER_PAGE = 7;
 const esc = (s = "") =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
+// --- LOG: простой структурный лог в одну строку ---
+const jlog = (ctx, event, extra = {}) => {
+  const u = ctx.from || {};
+  const base = {
+    ts: new Date().toISOString(),
+    event,
+    uid: u.id,
+    uname: u.username || null,
+  };
+  console.log(JSON.stringify({ ...base, ...extra }));
+};
+
 // Мгновенный ответ на клик — лечит "query is too old"
 const safeAnswerCb = async (ctx) => {
   try {
@@ -378,6 +390,9 @@ const processQueue = async () => {
 // ----------------------- БОТ -----------------------
 const initBot = async () => {
   bot.command("start", async (ctx) => {
+    // LOG:
+    jlog(ctx, "cmd_start");
+
     const { id, username } = ctx.from;
 
     if (!(allowedIds.includes(id) || allowedUsers.includes(username))) {
@@ -408,9 +423,11 @@ const initBot = async () => {
 
   // -------- HANDLERS --------
 
-  // Выбор даты
+  // Выбор даты (главное меню)
   bot.callbackQuery(/^\d{2}\.\d{2}$/, async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "pick_date", { date: ctx.match[0] }); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -424,9 +441,11 @@ const initBot = async () => {
     });
   });
 
-  // Выбор формата
+  // Выбор формата (главное меню)
   bot.callbackQuery(/^(ds|group|personal)$/, async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "pick_format", { format: ctx.match[0] }); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -481,7 +500,7 @@ const initBot = async () => {
     }
   });
 
-  // Выбор локации
+  // Выбор локации (элемент главного меню в ветке group/personal)
   bot.callbackQuery(/^location_(loc_\d+)$/, async (ctx) => {
     await safeAnswerCb(ctx);
     const id = ctx.from.id;
@@ -491,6 +510,13 @@ const initBot = async () => {
     const locId = ctx.match[1];
     const loc = (st.locations || []).find((l) => l.id === locId);
     st.selectedLocation = loc?.meaning || "---";
+
+    // LOG:
+    jlog(ctx, "pick_location", {
+      loc_id: locId,
+      loc_meaning: st.selectedLocation,
+      loc_label: loc?.label || null,
+    });
 
     // Всегда свежий список имён при входе на экран людей
     let names = (
@@ -516,7 +542,7 @@ const initBot = async () => {
     });
   });
 
-  // Выбор/уменьшение человека
+  // Выбор/уменьшение человека (не из главного меню — но тоже полезно логировать)
   bot.callbackQuery(/^pick_(p_\d+)$/, async (ctx) => {
     await safeAnswerCb(ctx);
     const id = ctx.from.id;
@@ -526,8 +552,16 @@ const initBot = async () => {
 
     if (st.selectedFormat === "ds") {
       st.buttonCounters[pid] = (st.buttonCounters[pid] || 0) + 1;
+      jlog(ctx, "person_inc", {
+        pid,
+        name: st.buttonIds.find((x) => x.id === pid)?.name || "?",
+      }); // LOG
     } else {
       st.buttonStates[pid] = !st.buttonStates[pid];
+      jlog(ctx, st.buttonStates[pid] ? "person_check_on" : "person_check_off", {
+        pid,
+        name: st.buttonIds.find((x) => x.id === pid)?.name || "?",
+      }); // LOG
     }
 
     const { keyboard, currentSelection } = createPeopleKeyboard(
@@ -548,6 +582,10 @@ const initBot = async () => {
     const pid = ctx.match[1];
 
     if ((st.buttonCounters?.[pid] || 0) > 0) st.buttonCounters[pid] -= 1;
+    jlog(ctx, "person_dec", {
+      pid,
+      name: st.buttonIds.find((x) => x.id === pid)?.name || "?",
+    }); // LOG
 
     const { keyboard, currentSelection } = createPeopleKeyboard(
       id,
@@ -559,9 +597,11 @@ const initBot = async () => {
     });
   });
 
-  // Пагинация
+  // Пагинация (не главное меню, но полезно)
   bot.callbackQuery(/prev_(\d+)/, async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "page_prev", { from_page: Number(ctx.match[1]) }); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -579,6 +619,8 @@ const initBot = async () => {
 
   bot.callbackQuery(/next_(\d+)/, async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "page_next", { from_page: Number(ctx.match[1]) }); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -594,7 +636,7 @@ const initBot = async () => {
     });
   });
 
-  // Готово
+  // Готово — логируем финальное сообщение 1-в-1 с тем, что уходит в чат/Airtable
   bot.callbackQuery("done", async (ctx) => {
     await safeAnswerCb(ctx);
     const id = ctx.from.id;
@@ -626,6 +668,14 @@ const initBot = async () => {
       )}`;
     }
 
+    // LOG: финальный payload (точно то, что отправляем)
+    jlog(ctx, "done_submit", {
+      message: responseText,
+      date,
+      format,
+      location: format === "ds" ? null : location,
+    });
+
     try {
       await ctx.editMessageText(esc(responseText), { parse_mode: "HTML" });
     } catch (err) {
@@ -645,9 +695,11 @@ const initBot = async () => {
     await sendDateSelection(ctx);
   });
 
-  // Назад/обновить/PNL
+  // Кнопки главного меню: назад/обновить/PNL
   bot.callbackQuery("back_to_start", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "nav_back_to_start"); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -660,6 +712,8 @@ const initBot = async () => {
 
   bot.callbackQuery("back_to_dates", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "nav_back_to_dates"); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -672,6 +726,8 @@ const initBot = async () => {
 
   bot.callbackQuery("back_to_format", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "nav_back_to_format"); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -684,6 +740,8 @@ const initBot = async () => {
 
   bot.callbackQuery("back_to_location", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "nav_back_to_location"); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -718,6 +776,8 @@ const initBot = async () => {
 
   bot.callbackQuery("refresh_dates", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "refresh_dates"); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -738,6 +798,8 @@ const initBot = async () => {
 
   bot.callbackQuery("view_pnl", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "view_pnl"); // LOG
+
     await ctx.editMessageText("Выберите дату, с которой начать просмотр:", {
       reply_markup: createPnlDateKeyboard(),
       parse_mode: "HTML",
@@ -746,6 +808,8 @@ const initBot = async () => {
 
   bot.callbackQuery(/^pnl_date_(\d{2}\.\d{2})$/, async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "pnl_pick_date", { date: ctx.match[1] }); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -784,6 +848,8 @@ const initBot = async () => {
 
   bot.callbackQuery("detailed_breakdown", async (ctx) => {
     await safeAnswerCb(ctx);
+    jlog(ctx, "pnl_detailed_breakdown"); // LOG
+
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -803,7 +869,7 @@ const initBot = async () => {
       .filter((r) => r.secondExpense > 0 && r.secondCoach === username)
       .map((r) => {
         const loc = r.format !== "ds" ? `, Локация: ${r.place}` : "";
-        return `Дата: ${r.date}, Тренер: ${r.coач}, Формат: ${r.format}${loc}, Сумма: ${r.secondExpense} ₽`;
+        return `Дата: ${r.date}, Тренер: ${r.coach}, Формат: ${r.format}${loc}, Сумма: ${r.secondExpense} ₽`;
       })
       .join("\n");
 
