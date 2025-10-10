@@ -14,6 +14,8 @@ const AIRTABLE_TABLE = process.env.AIRTABLE_TABLE_ID;
 const AIRTABLE_PLACES = process.env.AIRTABLE_PLACES_TABLE_ID;
 const AIRTABLE_SMS = process.env.AIRTABLE_SMS_ID;
 const AIRTABLE_PNL = process.env.AIRTABLE_PNL_ID;
+// acts (НОВОЕ)
+const AIRTABLE_ACTS = process.env.AIRTABLE_ACTS_TABLE_ID;
 
 // Лучше хранить в .env
 const SECONDARY_CHAT = Number(process.env.SECONDARY_CHAT_ID || -1002203093713);
@@ -23,9 +25,10 @@ const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TAB
 const airtablePlacesUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_PLACES}`;
 const airtableMessagesUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_SMS}`;
 const airtablePnlUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_PNL}`;
+const airtableActsUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_ACTS}`;
 
-// Авторизация пользователей
-const allowedIds = []; // при желании добавь свои user_id
+// Авторизация пользователей (оставляем как было)
+const allowedIds = []; // сюда можно добавить id пользователей
 const allowedUsers = [
   "Lokatororator",
   "Shaaaaaaat",
@@ -41,7 +44,7 @@ const BUTTONS_PER_PAGE = 7;
 const esc = (s = "") =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-// --- LOG: простой структурный лог в одну строку ---
+// Структурный лог в одну строку JSON
 const jlog = (ctx, event, extra = {}) => {
   const u = ctx.from || {};
   const base = {
@@ -53,7 +56,7 @@ const jlog = (ctx, event, extra = {}) => {
   console.log(JSON.stringify({ ...base, ...extra }));
 };
 
-// Мгновенный ответ на клик — лечит "query is too old"
+// Быстрый ответ на callback (исправляет "query is too old")
 const safeAnswerCb = async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
@@ -64,7 +67,7 @@ const safeAnswerCb = async (ctx) => {
   }
 };
 
-// Парсер дат dd.mm или dd.mm.yyyy с «разумным» годом
+// Парсер дат dd.mm или dd.mm.yyyy c «разумным» годом
 const parseDMY = (s = "") => {
   const parts = s.split(".");
   if (parts.length === 3) return new Date(+parts[2], +parts[1] - 1, +parts[0]);
@@ -77,7 +80,7 @@ const parseDMY = (s = "") => {
 };
 const compareDates = (date1, date2) => parseDMY(date1) >= parseDMY(date2);
 
-// Простой кэш только для второстепенных данных (напр. локации, pnl)
+// Простой кэш (для локаций/PNL)
 const putCache = (bag, key, val, ttlMs = 5 * 60 * 1000) => {
   bag._cache ??= {};
   bag._cache[key] = { val, exp: Date.now() + ttlMs };
@@ -120,7 +123,7 @@ const calcSelectedCount = (st) => {
   return Object.values(st.buttonStates || {}).filter(Boolean).length;
 };
 
-// Единая «шапка» — всегда со строкой 🔢 Кол-во
+// Шапка с Кол-во всегда
 const buildSummary = (st) => {
   let txt =
     `<b>Введенные данные:</b>\n` +
@@ -200,10 +203,11 @@ const sendMessagesWithPause = async (messages) => {
   }
 };
 
+// ---- PNL по датам (используется в старом PNL-потоке; можно оставить) ----
 const fetchPnlDataFromAirtable = async (username, startDateDM) => {
   let records = [];
   let offset = null;
-  const filterFormula = `OR({Coach} = '${username}', {Second_coach} = '${username}')`;
+  const filterFormula = `OR({Coach}='${username}', {Second_coach}='${username}')`;
   do {
     const response = await axios.get(airtablePnlUrl, {
       headers: { Authorization: `Bearer ${AIRTABLE_API}` },
@@ -227,7 +231,90 @@ const fetchPnlDataFromAirtable = async (username, startDateDM) => {
     .sort((a, b) => parseDMY(a.date) - parseDMY(b.date));
 };
 
-// ----------------------- UI КЛАВИАТУРЫ -----------------------
+// ---- ACTS (НОВОЕ) ----
+// получить все work-акты тренера
+const fetchActsForCoach = async (username) => {
+  const filterFormula = `AND({coach}='${username}', {status}='work')`;
+  let records = [];
+  let offset = null;
+  do {
+    const res = await axios.get(airtableActsUrl, {
+      headers: { Authorization: `Bearer ${AIRTABLE_API}` },
+      params: { offset, pageSize: 100, filterByFormula: filterFormula },
+    });
+    records = records.concat(res.data.records);
+    offset = res.data.offset;
+  } while (offset);
+
+  return records.map((r) => ({
+    id: r.id,
+    coach: r.fields.coach,
+    status: r.fields.status,
+    period_start: r.fields.period_start, // "DD.MM.YYYY" (текст)
+    period_end: r.fields.period_end, // "DD.MM.YYYY" (текст)
+    act_number: r.fields.act_number, // "MSC-GE-8"
+  }));
+};
+
+const parseActSuffix = (actNumber = "") => {
+  const m = (actNumber || "").match(/(\d+)\s*$/);
+  return m ? Number(m[1]) : null;
+};
+
+const pickCurrentAct = (acts = []) => {
+  if (!acts.length) return null;
+  const sorted = [...acts].sort(
+    (a, b) => parseDMY(b.period_end) - parseDMY(a.period_end)
+  );
+  return sorted[0];
+};
+
+const findPreviousAct = (allActs, currentAct) => {
+  const suf = parseActSuffix(currentAct?.act_number);
+  if (!suf || suf <= 1) return null;
+  const prefix = currentAct.act_number.replace(/(\d+)\s*$/, "");
+  const prevNum = suf - 1;
+  const prevCode = `${prefix}${prevNum}`;
+  return allActs.find((a) => a.act_number === prevCode) || null;
+};
+
+// PNL за диапазон [startDMY; endDMY] включительно (НОВОЕ)
+const fetchPnlDataForRange = async (username, startDMY, endDMY) => {
+  let records = [];
+  let offset = null;
+  const filterFormula = `OR({Coach}='${username}', {Second_coach}='${username}')`;
+  do {
+    const response = await axios.get(airtablePnlUrl, {
+      headers: { Authorization: `Bearer ${AIRTABLE_API}` },
+      params: { offset, pageSize: 100, filterByFormula: filterFormula },
+    });
+    records = records.concat(response.data.records);
+    offset = response.data.offset;
+  } while (offset);
+
+  const start = parseDMY(startDMY);
+  const end = parseDMY(endDMY);
+
+  const arr = records
+    .map((r) => ({
+      date: r.fields.Data,
+      coach: r.fields.Coach,
+      secondCoach: r.fields.Second_coach,
+      format: r.fields.Format,
+      place: r.fields.Place,
+      expense: r.fields.Expenses_coach || 0,
+      secondExpense: r.fields.Expenses_second_coach || 0,
+    }))
+    .filter((rec) => {
+      const d = parseDMY(rec.date);
+      return d >= start && d <= end;
+    })
+    .sort((a, b) => parseDMY(a.date) - parseDMY(b.date));
+
+  return arr;
+};
+
+// ----------------------- КЛАВИАТУРЫ -----------------------
 const createDateKeyboard = () => {
   const kb = new InlineKeyboard();
   const now = new Date();
@@ -262,7 +349,7 @@ const createLocationKeyboard = (locations = []) => {
   const kb = new InlineKeyboard();
   for (const loc of locations) {
     const label = loc.label.charAt(0).toUpperCase() + loc.label.slice(1);
-    kb.text(label, `location_${loc.id}`).row(); // короткий id в callback_data
+    kb.text(label, `location_${loc.id}`).row();
   }
   kb.text("⬅️ Вернуться", "back_to_format").row();
   return kb;
@@ -300,41 +387,8 @@ const createPeopleKeyboard = (userId, format) => {
 
   kb.text("⬅️ Вернуться", "back_to_location").text("ГОТОВО ✅", "done");
 
-  // Единая «шапка» с Кол-во и списком людей
   const currentSelection = buildSummary(st);
   return { keyboard: kb, currentSelection };
-};
-
-// ----------------------- PNL ДАТЫ -----------------------
-const getLastEightMondays = () => {
-  const dates = [];
-  const now = new Date();
-  const day = now.getDay(); // 0 вс, 1 пн
-  const diff = day === 1 ? 0 : day === 0 ? 6 : day - 1;
-  const lastMonday = new Date(now);
-  lastMonday.setDate(now.getDate() - diff);
-  for (let i = 0; i < 8; i++) {
-    const d = new Date(lastMonday);
-    d.setDate(lastMonday.getDate() - i * 7);
-    const dd = String(d.getDate()).padStart(2, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    dates.push(`${dd}.${mm}`);
-  }
-  return dates.reverse();
-};
-
-const createPnlDateKeyboard = () => {
-  const kb = new InlineKeyboard();
-  const dates = getLastEightMondays();
-  for (let i = 0; i < dates.length; i += 4) {
-    if (dates[i]) kb.text(dates[i], `pnl_date_${dates[i]}`);
-    if (dates[i + 1]) kb.text(dates[i + 1], `pnl_date_${dates[i + 1]}`);
-    if (dates[i + 2]) kb.text(dates[i + 2], `pnl_date_${dates[i + 2]}`);
-    if (dates[i + 3]) kb.text(dates[i + 3], `pnl_date_${dates[i + 3]}`);
-    kb.row();
-  }
-  kb.text("⬅️ Вернуться", "back_to_dates").row();
-  return kb;
 };
 
 // ----------------------- ОЧЕРЕДЬ ОТПРАВКИ -----------------------
@@ -390,11 +444,9 @@ const processQueue = async () => {
 // ----------------------- БОТ -----------------------
 const initBot = async () => {
   bot.command("start", async (ctx) => {
-    // LOG:
     jlog(ctx, "cmd_start");
 
     const { id, username } = ctx.from;
-
     if (!(allowedIds.includes(id) || allowedUsers.includes(username))) {
       await ctx.reply("Отказ в доступе к боту");
       return;
@@ -421,12 +473,10 @@ const initBot = async () => {
     });
   };
 
-  // -------- HANDLERS --------
-
-  // Выбор даты (главное меню)
+  // --- Главные действия ---
   bot.callbackQuery(/^\d{2}\.\d{2}$/, async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "pick_date", { date: ctx.match[0] }); // LOG
+    jlog(ctx, "pick_date", { date: ctx.match[0] });
 
     const id = ctx.from.id;
     ensureState(id);
@@ -441,10 +491,9 @@ const initBot = async () => {
     });
   });
 
-  // Выбор формата (главное меню)
   bot.callbackQuery(/^(ds|group|personal)$/, async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "pick_format", { format: ctx.match[0] }); // LOG
+    jlog(ctx, "pick_format", { format: ctx.match[0] });
 
     const id = ctx.from.id;
     ensureState(id);
@@ -453,7 +502,6 @@ const initBot = async () => {
     st.selectedFormat = ctx.match[0];
 
     if (st.selectedFormat === "ds") {
-      // Всегда свежий список имён
       let names = (
         await fetchDataFromAirtable(ctx.from.username, airtableUrl)
       ).map((r) => r.name);
@@ -476,7 +524,6 @@ const initBot = async () => {
         parse_mode: "HTML",
       });
     } else {
-      // Локации можно кэшировать
       let locs = getCache(st, "locations");
       if (!locs) {
         const raw = await fetchDataFromAirtable(
@@ -500,7 +547,6 @@ const initBot = async () => {
     }
   });
 
-  // Выбор локации (элемент главного меню в ветке group/personal)
   bot.callbackQuery(/^location_(loc_\d+)$/, async (ctx) => {
     await safeAnswerCb(ctx);
     const id = ctx.from.id;
@@ -510,15 +556,13 @@ const initBot = async () => {
     const locId = ctx.match[1];
     const loc = (st.locations || []).find((l) => l.id === locId);
     st.selectedLocation = loc?.meaning || "---";
-
-    // LOG:
     jlog(ctx, "pick_location", {
       loc_id: locId,
       loc_meaning: st.selectedLocation,
       loc_label: loc?.label || null,
     });
 
-    // Всегда свежий список имён при входе на экран людей
+    // Всегда свежий список имён
     let names = (
       await fetchDataFromAirtable(ctx.from.username, airtableUrl)
     ).map((r) => r.name);
@@ -542,7 +586,7 @@ const initBot = async () => {
     });
   });
 
-  // Выбор/уменьшение человека (не из главного меню — но тоже полезно логировать)
+  // Выбор людей
   bot.callbackQuery(/^pick_(p_\d+)$/, async (ctx) => {
     await safeAnswerCb(ctx);
     const id = ctx.from.id;
@@ -555,13 +599,13 @@ const initBot = async () => {
       jlog(ctx, "person_inc", {
         pid,
         name: st.buttonIds.find((x) => x.id === pid)?.name || "?",
-      }); // LOG
+      });
     } else {
       st.buttonStates[pid] = !st.buttonStates[pid];
       jlog(ctx, st.buttonStates[pid] ? "person_check_on" : "person_check_off", {
         pid,
         name: st.buttonIds.find((x) => x.id === pid)?.name || "?",
-      }); // LOG
+      });
     }
 
     const { keyboard, currentSelection } = createPeopleKeyboard(
@@ -585,7 +629,7 @@ const initBot = async () => {
     jlog(ctx, "person_dec", {
       pid,
       name: st.buttonIds.find((x) => x.id === pid)?.name || "?",
-    }); // LOG
+    });
 
     const { keyboard, currentSelection } = createPeopleKeyboard(
       id,
@@ -597,10 +641,10 @@ const initBot = async () => {
     });
   });
 
-  // Пагинация (не главное меню, но полезно)
+  // Пагинация
   bot.callbackQuery(/prev_(\d+)/, async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "page_prev", { from_page: Number(ctx.match[1]) }); // LOG
+    jlog(ctx, "page_prev", { from_page: Number(ctx.match[1]) });
 
     const id = ctx.from.id;
     ensureState(id);
@@ -619,7 +663,7 @@ const initBot = async () => {
 
   bot.callbackQuery(/next_(\d+)/, async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "page_next", { from_page: Number(ctx.match[1]) }); // LOG
+    jlog(ctx, "page_next", { from_page: Number(ctx.match[1]) });
 
     const id = ctx.from.id;
     ensureState(id);
@@ -636,7 +680,7 @@ const initBot = async () => {
     });
   });
 
-  // Готово — логируем финальное сообщение 1-в-1 с тем, что уходит в чат/Airtable
+  // Готово
   bot.callbackQuery("done", async (ctx) => {
     await safeAnswerCb(ctx);
     const id = ctx.from.id;
@@ -668,7 +712,7 @@ const initBot = async () => {
       )}`;
     }
 
-    // LOG: финальный payload (точно то, что отправляем)
+    // лог отправляемого сообщения
     jlog(ctx, "done_submit", {
       message: responseText,
       date,
@@ -695,10 +739,10 @@ const initBot = async () => {
     await sendDateSelection(ctx);
   });
 
-  // Кнопки главного меню: назад/обновить/PNL
+  // Навигация/сброс
   bot.callbackQuery("back_to_start", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "nav_back_to_start"); // LOG
+    jlog(ctx, "nav_back_to_start");
 
     const id = ctx.from.id;
     ensureState(id);
@@ -712,7 +756,7 @@ const initBot = async () => {
 
   bot.callbackQuery("back_to_dates", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "nav_back_to_dates"); // LOG
+    jlog(ctx, "nav_back_to_dates");
 
     const id = ctx.from.id;
     ensureState(id);
@@ -726,7 +770,7 @@ const initBot = async () => {
 
   bot.callbackQuery("back_to_format", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "nav_back_to_format"); // LOG
+    jlog(ctx, "nav_back_to_format");
 
     const id = ctx.from.id;
     ensureState(id);
@@ -740,7 +784,7 @@ const initBot = async () => {
 
   bot.callbackQuery("back_to_location", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "nav_back_to_location"); // LOG
+    jlog(ctx, "nav_back_to_location");
 
     const id = ctx.from.id;
     ensureState(id);
@@ -776,13 +820,13 @@ const initBot = async () => {
 
   bot.callbackQuery("refresh_dates", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "refresh_dates"); // LOG
+    jlog(ctx, "refresh_dates");
 
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
 
-    st._cache = null; // очистка кэша второстепенных данных
+    st._cache = null;
     st.selectedDate = "---";
     st.selectedFormat = "---";
     st.selectedLocation = "---";
@@ -796,33 +840,32 @@ const initBot = async () => {
     });
   });
 
+  // ----- НОВЫЙ поток PNL: два периода -----
   bot.callbackQuery("view_pnl", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "view_pnl"); // LOG
+    jlog(ctx, "view_pnl");
 
-    await ctx.editMessageText("Выберите дату, с которой начать просмотр:", {
-      reply_markup: createPnlDateKeyboard(),
+    const kb = new InlineKeyboard()
+      .text("Текущий период", "pnl_period_current")
+      .row()
+      .text("Предыдущий период", "pnl_period_prev")
+      .row()
+      .text("↩️ Вернуться", "back_to_dates")
+      .row();
+
+    await ctx.editMessageText("Выберите период для начислений:", {
+      reply_markup: kb,
       parse_mode: "HTML",
     });
   });
 
-  bot.callbackQuery(/^pnl_date_(\d{2}\.\d{2})$/, async (ctx) => {
-    await safeAnswerCb(ctx);
-    jlog(ctx, "pnl_pick_date", { date: ctx.match[1] }); // LOG
-
-    const id = ctx.from.id;
-    ensureState(id);
-    const st = userStates[id];
-
-    const date = ctx.match[1];
+  const showPnlForRange = async (ctx, startDMY, endDMY, label) => {
     const username = ctx.from.username;
+    const pnl = await fetchPnlDataForRange(username, startDMY, endDMY);
 
-    const cacheKey = `pnl_${date}`;
-    let pnl = getCache(st, cacheKey);
-    if (!pnl) {
-      pnl = await fetchPnlDataFromAirtable(username, date);
-      putCache(st, cacheKey, pnl, 2 * 60 * 1000); // TTL 2 минуты
-    }
+    // кладём кэш для "детальной разбивки"
+    const id = ctx.from.id;
+    const st = ensureState(id);
     st.pnlDataCache = pnl;
 
     const totalRevenue = pnl.reduce((acc, r) => {
@@ -834,21 +877,78 @@ const initBot = async () => {
     const kb = new InlineKeyboard()
       .text(`Детальная разбивка (${totalRevenue} ₽)`, "detailed_breakdown")
       .row()
-      .text("↩️ Вернуться в главное меню", "back_to_start")
+      .text("↩️ Вернуться", "view_pnl")
       .row();
 
     await ctx.editMessageText(
-      `Общий заработок с ${esc(date)}: ${totalRevenue} ₽`,
-      {
-        reply_markup: kb,
+      `${label}\nПериод: ${startDMY} — ${endDMY}\nИтого: ${totalRevenue} ₽`,
+      { reply_markup: kb, parse_mode: "HTML" }
+    );
+  };
+
+  bot.callbackQuery("pnl_period_current", async (ctx) => {
+    await safeAnswerCb(ctx);
+    jlog(ctx, "pnl_pick_current");
+
+    const username = ctx.from.username;
+    const acts = await fetchActsForCoach(username);
+    const current = pickCurrentAct(acts);
+
+    if (!current) {
+      await ctx.editMessageText("Не найден текущий акт со статусом work.", {
+        reply_markup: new InlineKeyboard().text("↩️ Вернуться", "view_pnl"),
         parse_mode: "HTML",
-      }
+      });
+      return;
+    }
+    await showPnlForRange(
+      ctx,
+      current.period_start,
+      current.period_end,
+      `Начисления: Текущий период (акт ${current.act_number})`
     );
   });
 
+  bot.callbackQuery("pnl_period_prev", async (ctx) => {
+    await safeAnswerCb(ctx);
+    jlog(ctx, "pnl_pick_prev");
+
+    const username = ctx.from.username;
+    const acts = await fetchActsForCoach(username);
+    const current = pickCurrentAct(acts);
+
+    if (!current) {
+      await ctx.editMessageText("Не найден текущий акт со статусом work.", {
+        reply_markup: new InlineKeyboard().text("↩️ Вернуться", "view_pnl"),
+        parse_mode: "HTML",
+      });
+      return;
+    }
+
+    const prev = findPreviousAct(acts, current);
+    if (!prev) {
+      await ctx.editMessageText(
+        `Предыдущего периода нет (акт ${current.act_number}).`,
+        {
+          reply_markup: new InlineKeyboard().text("↩️ Вернуться", "view_pnl"),
+          parse_mode: "HTML",
+        }
+      );
+      return;
+    }
+
+    await showPnlForRange(
+      ctx,
+      prev.period_start,
+      prev.period_end,
+      `Начисления: Предыдущий период (акт ${prev.act_number})`
+    );
+  });
+
+  // Детальная разбивка (использует st.pnlDataCache)
   bot.callbackQuery("detailed_breakdown", async (ctx) => {
     await safeAnswerCb(ctx);
-    jlog(ctx, "pnl_detailed_breakdown"); // LOG
+    jlog(ctx, "pnl_detailed_breakdown");
 
     const id = ctx.from.id;
     ensureState(id);
@@ -877,7 +977,7 @@ const initBot = async () => {
     if (asMentor) text += `\n\nВаши начисления как ментора:\n${asMentor}`;
 
     const kb = new InlineKeyboard()
-      .text("↩️ Вернуться в главное меню", "back_to_start")
+      .text("↩️ Вернуться в выбор периода", "view_pnl")
       .row();
 
     await ctx.editMessageText(esc(text), {
@@ -900,14 +1000,13 @@ const initBot = async () => {
   });
 };
 
+// ----------------------- ЗАПУСК (универсальный) -----------------------
 (async () => {
   await initBot();
 
   const mode = (process.env.BOT_MODE || "polling").toLowerCase();
 
   if (mode === "polling") {
-    // На всякий случай: отключаем вебхук и чистим висящие апдейты,
-    // чтобы исключить 409 и конфликты режимов.
     await bot.api.deleteWebhook({ drop_pending_updates: true });
     await bot.start();
     console.log("Bot started in POLLING mode");
