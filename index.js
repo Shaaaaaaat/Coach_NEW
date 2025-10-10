@@ -135,7 +135,8 @@ const buildSummary = (st) => {
   }
 
   const totalCount = calcSelectedCount(st);
-  txt += `\n🔢 Кол-во: ${totalCount}`;
+  const countDisplay = totalCount > 0 ? totalCount : "---";
+  txt += `\n🔢 Кол-во: ${countDisplay}`;
 
   if (st.selectedFormat === "ds") {
     const pickedList = Object.entries(st.buttonCounters || {})
