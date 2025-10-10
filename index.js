@@ -1,3 +1,4 @@
+// index.js
 require("dotenv").config();
 const { Bot, GrammyError, HttpError, InlineKeyboard } = require("grammy");
 const { hydrate } = require("@grammyjs/hydrate");
@@ -14,16 +15,17 @@ const AIRTABLE_PLACES = process.env.AIRTABLE_PLACES_TABLE_ID;
 const AIRTABLE_SMS = process.env.AIRTABLE_SMS_ID;
 const AIRTABLE_PNL = process.env.AIRTABLE_PNL_ID;
 
-// CHANGED: чат вынесен в .env (было захардкожено)
+// можно (и лучше) хранить в .env
 const SECONDARY_CHAT = Number(process.env.SECONDARY_CHAT_ID || -1002203093713);
 
+// API urls
 const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
 const airtablePlacesUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_PLACES}`;
 const airtableMessagesUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_SMS}`;
 const airtablePnlUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_PNL}`;
 
-// CHANGED: авторизация по id предпочтительнее username
-const allowedIds = []; // NEW: заполни вашими числовыми user_id, например [123, 456]
+// Авторизация (по id надёжнее; username оставлен дополнительно)
+const allowedIds = []; // заполни своими user_id при желании
 const allowedUsers = [
   "Lokatororator",
   "Shaaaaaaat",
@@ -35,40 +37,35 @@ const allowedUsers = [
 
 const BUTTONS_PER_PAGE = 7;
 
-// ----------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----------------------
-
-// NEW: безопасное экранирование под HTML (мы ушли с Markdown на HTML)
+// ----------------------- ХЕЛПЕРЫ -----------------------
 const esc = (s = "") =>
   s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-// NEW: мгновенный ответ на клик (лечит "query is too old")
-// вызываем ПЕРВОЙ строкой в каждом callback-хэндлере
+// отвечаем на нажатие сразу — убирает "query is too old"
 const safeAnswerCb = async (ctx) => {
   try {
     await ctx.answerCallbackQuery();
   } catch (e) {
-    // NOTE: "query is too old" (400) — это нормальная ситуация, если пользователь успел нажать раньше/позже
     if (!(e instanceof GrammyError && e.error_code === 400)) {
       console.error("answerCallbackQuery error:", e);
     }
   }
 };
 
-// NEW: корректный парсер дат dd.mm и dd.mm.yyyy с логикой года
-// (старая compareDates подставляла 2000 и ломалась на Новом Годе)
+// dd.mm или dd.mm.yyyy → Date, с «разумным» годом для dd.mm
 const parseDMY = (s = "") => {
   const parts = s.split(".");
-  if (parts.length === 3) return new Date(+parts[2], +parts[1] - 1, +parts[0]); // dd.mm.yyyy
+  if (parts.length === 3) return new Date(+parts[2], +parts[1] - 1, +parts[0]);
   const [d, m] = parts.map(Number);
   const now = new Date();
   let y = now.getFullYear();
   const candidate = new Date(y, m - 1, d);
-  if (candidate > now) y -= 1; // не допускаем будущие даты
+  if (candidate > now) y -= 1;
   return new Date(y, m - 1, d);
 };
 const compareDates = (date1, date2) => parseDMY(date1) >= parseDMY(date2);
 
-// NEW: простой кэш на пользователя (уменьшает задержки и таймауты)
+// простой кэш в состоянии пользователя
 const putCache = (bag, key, val, ttlMs = 5 * 60 * 1000) => {
   bag._cache ??= {};
   bag._cache[key] = { val, exp: Date.now() + ttlMs };
@@ -79,22 +76,21 @@ const getCache = (bag, key) => {
   return rec && rec.exp > Date.now() ? rec.val : null;
 };
 
-// ----------------------- СОСТОЯНИЕ ПОЛЬЗОВАТЕЛЕЙ -----------------------
+// ----------------------- СОСТОЯНИЕ -----------------------
 const userStates = {}; // userId -> state
 
-// NEW: единообразное состояние
 const freshState = () => ({
-  buttonTexts: [], // список имён (для отображения)
-  buttonIds: [], // [{id:'p_0', name:'Иванов Иван'}]
-  buttonStates: {}, // {'p_0': true/false} — для group/personal
-  buttonCounters: {}, // {'p_0': 0..n}       — для ds
+  buttonTexts: [], // имена (для отображения)
+  buttonIds: [], // [{id:'p_0', name:'Иван'}]
+  buttonStates: {}, // {'p_0': true/false} — group/personal
+  buttonCounters: {}, // {'p_0': 0..n}       — ds
   currentPage: 0,
   selectedDate: "---",
   selectedFormat: "---", // 'ds' | 'group' | 'personal'
-  selectedLocation: "---", // значение meaning (нормализованная локация)
+  selectedLocation: "---", // meaning
   locations: [], // [{id:'loc_0', label:'...', meaning:'...'}]
   pnlDataCache: [],
-  _cache: null, // внутренний кэш (имена, локации, pnl)
+  _cache: null,
 });
 const ensureState = (uid) => (userStates[uid] ??= freshState());
 const resetUserState = (uid) => {
@@ -114,18 +110,13 @@ const fetchDataFromAirtable = async (username, url) => {
     offset = response.data.offset;
   } while (offset);
 
-  // CHANGED: логика прежняя, просто компактнее
-  const filteredRecords = records
-    .filter(
-      (record) => record.fields.Coach && record.fields.Coach.includes(username)
-    )
-    .map((record) => ({
-      name: record.fields.FIO3,
-      place: record.fields.Places,
-      meaning: record.fields.Meanings,
+  return records
+    .filter((r) => r.fields.Coach && r.fields.Coach.includes(username))
+    .map((r) => ({
+      name: r.fields.FIO3,
+      place: r.fields.Places,
+      meaning: r.fields.Meanings,
     }));
-
-  return filteredRecords;
 };
 
 const sendMessageToAirtable = async (message) => {
@@ -151,15 +142,13 @@ const sendMessageToAirtable = async (message) => {
 const sendMessagesWithPause = async (messages) => {
   for (const message of messages) {
     await sendMessageToAirtable(message);
-    await new Promise((resolve) => setTimeout(resolve, 10000));
+    await new Promise((r) => setTimeout(r, 10000));
   }
 };
 
 const fetchPnlDataFromAirtable = async (username, startDateDM) => {
   let records = [];
   let offset = null;
-
-  // NOTE: как и было — фильтрация по Coach/Second_coach
   const filterFormula = `OR({Coach} = '${username}', {Second_coach} = '${username}')`;
   do {
     const response = await axios.get(airtablePnlUrl, {
@@ -170,10 +159,9 @@ const fetchPnlDataFromAirtable = async (username, startDateDM) => {
     offset = response.data.offset;
   } while (offset);
 
-  // CHANGED: фильтруем/сортируем по нормальным датам (parseDMY)
-  const filtered = records
+  return records
     .map((r) => ({
-      date: r.fields.Data, // 'dd.mm' или 'dd.mm.yyyy'
+      date: r.fields.Data,
       coach: r.fields.Coach,
       secondCoach: r.fields.Second_coach,
       format: r.fields.Format,
@@ -183,13 +171,9 @@ const fetchPnlDataFromAirtable = async (username, startDateDM) => {
     }))
     .filter((rec) => compareDates(rec.date, startDateDM))
     .sort((a, b) => parseDMY(a.date) - parseDMY(b.date));
-
-  return filtered;
 };
 
-// ----------------------- UI: КНОПКИ -----------------------
-
-// CHANGED: верстка на HTML вместо Markdown
+// ----------------------- UI КЛАВИАТУРЫ -----------------------
 const createDateKeyboard = () => {
   const kb = new InlineKeyboard();
   const now = new Date();
@@ -201,14 +185,11 @@ const createDateKeyboard = () => {
     const month = String(d.getMonth() + 1).padStart(2, "0");
     dates.push(`${day}.${month}`);
   }
-
   kb.text(dates[0], dates[0]).row();
   for (let i = 4; i > 0; i--) kb.text(dates[i], dates[i]);
   kb.row();
-
   kb.text("🔄 Обновить даты", "refresh_dates").row();
   kb.text("💰 Посмотреть начисления", "view_pnl").row();
-
   return kb;
 };
 
@@ -227,30 +208,23 @@ const createLocationKeyboard = (locations = []) => {
   const kb = new InlineKeyboard();
   for (const loc of locations) {
     const label = loc.label.charAt(0).toUpperCase() + loc.label.slice(1);
-    // NEW: в callback_data кладём КОРОТКИЙ ID (а не весь текст)
-    kb.text(label, `location_${loc.id}`).row();
+    kb.text(label, `location_${loc.id}`).row(); // короткий id в callback_data
   }
   kb.text("⬅️ Вернуться", "back_to_format").row();
   return kb;
 };
 
-// NEW: универсальный генератор клавиатуры людей с пагинацией и резюме
-// — используется и для ds (счётчики), и для group/personal (галочки)
 const createPeopleKeyboard = (userId, format) => {
   const st = ensureState(userId);
   const kb = new InlineKeyboard();
-
   const total = st.buttonIds.length;
-  if (!total) {
-    return { keyboard: kb, currentSelection: "Нет данных" };
-  }
+  if (!total) return { keyboard: kb, currentSelection: "Нет данных" };
 
   const page = st.currentPage || 0;
   const start = page * BUTTONS_PER_PAGE;
   const end = Math.min(start + BUTTONS_PER_PAGE, total);
   const slice = st.buttonIds.slice(start, end);
 
-  // CHANGED: кнопки навигации страницы
   if (page > 0 && end < total)
     kb.text("⬅️ Назад", `prev_${page}`)
       .text("Еще люди ➡️", `next_${page}`)
@@ -258,7 +232,6 @@ const createPeopleKeyboard = (userId, format) => {
   else if (page > 0) kb.text("⬅️ Назад", `prev_${page}`).row();
   else if (end < total) kb.text("Еще люди ➡️", `next_${page}`).row();
 
-  // CHANGED: в callback_data — короткий ID (p_0, p_1, ...)
   for (const { id, name } of slice) {
     if (format === "ds") {
       const count = st.buttonCounters[id] || 0;
@@ -273,10 +246,10 @@ const createPeopleKeyboard = (userId, format) => {
 
   kb.text("⬅️ Вернуться", "back_to_location").text("ГОТОВО ✅", "done");
 
-  // NEW: красивое резюме выбора
-  let currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-    st.selectedDate || "---"
-  )}\n🤸 Тип тренировки: ${esc(st.selectedFormat || "---")}`;
+  let currentSelection =
+    `<b>Введенные данные:</b>\n` +
+    `📅 Дата: ${esc(st.selectedDate || "---")}\n` +
+    `🤸 Тип тренировки: ${esc(st.selectedFormat || "---")}`;
   if (st.selectedFormat !== "ds")
     currentSelection += `\n📍 Место: ${esc(st.selectedLocation || "---")}`;
 
@@ -303,10 +276,9 @@ const getLastEightMondays = () => {
   const dates = [];
   const now = new Date();
   const day = now.getDay(); // 0 вс, 1 пн
-  const diff = day === 1 ? 0 : day === 0 ? 6 : day - 1; // сколько дней назад был понедельник
+  const diff = day === 1 ? 0 : day === 0 ? 6 : day - 1;
   const lastMonday = new Date(now);
   lastMonday.setDate(now.getDate() - diff);
-
   for (let i = 0; i < 8; i++) {
     const d = new Date(lastMonday);
     d.setDate(lastMonday.getDate() - i * 7);
@@ -335,15 +307,14 @@ const createPnlDateKeyboard = () => {
 const messageQueue = [];
 let isProcessingQueue = false;
 
-// CHANGED: очередь обёрнута try/finally, чтобы флаг не залипал
 const processMessage = async (message) => {
-  const { ctx, responseText, date, format, location } = message;
+  const { ctx, responseText, date, format } = message;
   const userId = ctx.from.id;
   const st = ensureState(userId);
 
   if (format === "ds") {
     const countsArr = Object.values(st.buttonCounters || {});
-    const maxCount = countsArr.length ? Math.max(...countsArr) : 0; // NEW: защита от -Infinity
+    const maxCount = countsArr.length ? Math.max(...countsArr) : 0;
     if (maxCount === 0) return;
 
     const messages = [];
@@ -387,7 +358,6 @@ const initBot = async () => {
   bot.command("start", async (ctx) => {
     const { id, username } = ctx.from;
 
-    // CHANGED: проверяем id И/ИЛИ username (на ваш выбор)
     if (!(allowedIds.includes(id) || allowedUsers.includes(username))) {
       await ctx.reply("Отказ в доступе к боту");
       return;
@@ -396,14 +366,14 @@ const initBot = async () => {
     ensureState(id);
     const st = userStates[id];
 
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
 
-    // CHANGED: HTML вместо Markdown
-    await ctx.reply(currentSelection + "<br><br>Выберите дату:", {
+    await ctx.reply(currentSelection + "\n\nВыберите дату:", {
       reply_markup: createDateKeyboard(),
       parse_mode: "HTML",
     });
@@ -413,61 +383,57 @@ const initBot = async () => {
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
-    await ctx.reply(currentSelection + "<br><br>Выберите дату:", {
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
+    await ctx.reply(currentSelection + "\n\nВыберите дату:", {
       reply_markup: createDateKeyboard(),
       parse_mode: "HTML",
     });
   };
 
-  // ----------------------- HANDLERS -----------------------
+  // -------- HANDLERS --------
 
-  // CHANGED: в каждом callback-хэндлере — первой строкой safeAnswerCb(ctx)
-
-  // Выбор даты dd.mm
   bot.callbackQuery(/^\d{2}\.\d{2}$/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
 
-    const date = ctx.match[0];
-    st.selectedDate = date;
+    st.selectedDate = ctx.match[0];
 
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
 
-    await ctx.editMessageText(currentSelection + "<br><br>Выберите формат:", {
+    await ctx.editMessageText(currentSelection + "\n\nВыберите формат:", {
       reply_markup: createFormatKeyboard(),
       parse_mode: "HTML",
     });
   });
 
-  // Выбор формата
   bot.callbackQuery(/^(ds|group|personal)$/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
 
-    const format = ctx.match[0];
-    st.selectedFormat = format;
+    st.selectedFormat = ctx.match[0];
 
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
 
-    if (format === "ds") {
-      // NEW: кэш имён
+    if (st.selectedFormat === "ds") {
       let names = getCache(st, "names");
       if (!names) {
         names = (
@@ -476,11 +442,9 @@ const initBot = async () => {
         names.sort((a, b) => a.localeCompare(b));
         putCache(st, "names", names);
       }
-
-      // NEW: короткие ID вместо текста в callback_data
       st.buttonTexts = names;
       st.buttonIds = names.map((name, i) => ({ id: `p_${i}`, name }));
-      st.buttonStates = {}; // не используется в ds
+      st.buttonStates = {};
       st.buttonCounters = Object.fromEntries(
         st.buttonIds.map(({ id }) => [id, 0])
       );
@@ -488,14 +452,13 @@ const initBot = async () => {
 
       const { keyboard, currentSelection: sel } = createPeopleKeyboard(
         id,
-        format
+        st.selectedFormat
       );
-      await ctx.editMessageText(sel + "<br><br>Выберите людей:", {
+      await ctx.editMessageText(sel + "\n\nВыберите людей:", {
         reply_markup: keyboard,
         parse_mode: "HTML",
       });
     } else {
-      // NEW: кэш локаций
       let locs = getCache(st, "locations");
       if (!locs) {
         const raw = await fetchDataFromAirtable(
@@ -511,19 +474,15 @@ const initBot = async () => {
       }
       st.locations = locs;
 
-      await ctx.editMessageText(
-        currentSelection + "<br><br>Выберите локацию:",
-        {
-          reply_markup: createLocationKeyboard(locs),
-          parse_mode: "HTML",
-        }
-      );
+      await ctx.editMessageText(currentSelection + "\n\nВыберите локацию:", {
+        reply_markup: createLocationKeyboard(locs),
+        parse_mode: "HTML",
+      });
     }
   });
 
-  // Выбор локации
   bot.callbackQuery(/^location_(loc_\d+)$/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -532,7 +491,6 @@ const initBot = async () => {
     const loc = (st.locations || []).find((l) => l.id === locId);
     st.selectedLocation = loc?.meaning || "---";
 
-    // имена (кэш)
     let names = getCache(st, "names");
     if (!names) {
       names = (await fetchDataFromAirtable(ctx.from.username, airtableUrl)).map(
@@ -547,22 +505,21 @@ const initBot = async () => {
     st.buttonStates = Object.fromEntries(
       st.buttonIds.map(({ id }) => [id, false])
     );
-    st.buttonCounters = {}; // не используется здесь
+    st.buttonCounters = {};
     st.currentPage = 0;
 
     const { keyboard, currentSelection } = createPeopleKeyboard(
       id,
       st.selectedFormat
     );
-    await ctx.editMessageText(currentSelection + "<br><br>Выберите людей:", {
+    await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
       reply_markup: keyboard,
       parse_mode: "HTML",
     });
   });
 
-  // Клик по человеку (увеличить счётчик в ds или переключить галочку)
   bot.callbackQuery(/^pick_(p_\d+)$/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -578,15 +535,14 @@ const initBot = async () => {
       id,
       st.selectedFormat
     );
-    await ctx.editMessageText(currentSelection + "<br><br>Выберите людей:", {
+    await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
       reply_markup: keyboard,
       parse_mode: "HTML",
     });
   });
 
-  // Уменьшение счётчика (ds)
   bot.callbackQuery(/^minus_(p_\d+)$/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -598,15 +554,14 @@ const initBot = async () => {
       id,
       st.selectedFormat
     );
-    await ctx.editMessageText(currentSelection + "<br><br>Выберите людей:", {
+    await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
       reply_markup: keyboard,
       parse_mode: "HTML",
     });
   });
 
-  // Навигация по страницам
   bot.callbackQuery(/prev_(\d+)/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -616,14 +571,14 @@ const initBot = async () => {
       id,
       st.selectedFormat
     );
-    await ctx.editMessageText(currentSelection + "<br><br>Выберите людей:", {
+    await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
       reply_markup: keyboard,
       parse_mode: "HTML",
     });
   });
 
   bot.callbackQuery(/next_(\d+)/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -633,15 +588,14 @@ const initBot = async () => {
       id,
       st.selectedFormat
     );
-    await ctx.editMessageText(currentSelection + "<br><br>Выберите людей:", {
+    await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
       reply_markup: keyboard,
       parse_mode: "HTML",
     });
   });
 
-  // Готово
   bot.callbackQuery("done", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -651,7 +605,6 @@ const initBot = async () => {
     const format = st.selectedFormat;
     const location = st.selectedLocation;
 
-    // CHANGED: формируем сообщение из ID → имена
     let responseText = "";
     if (format === "ds") {
       const selectedCounts = Object.entries(st.buttonCounters)
@@ -672,111 +625,94 @@ const initBot = async () => {
       )}`;
     }
 
-    // Покажем пользователю (экранируем для HTML)
     try {
       await ctx.editMessageText(esc(responseText), { parse_mode: "HTML" });
     } catch (err) {
       console.error("Error editing message:", err);
     }
 
-    // И отправим в сторонний чат
     try {
       await bot.api.sendMessage(SECONDARY_CHAT, responseText.trim());
     } catch (err) {
-      console.error("Error sending message to secondary chat:", err);
+      console.error("Error sending to secondary chat:", err);
     }
 
-    // В очередь на Airtable
     messageQueue.push({ ctx, responseText, date, format, location });
     processQueue();
 
-    // Сброс состояния и возврат в начало
     resetUserState(id);
     await sendDateSelection(ctx);
   });
 
-  // Навигация назад
   bot.callbackQuery("back_to_start", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
-
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
-    try {
-      await ctx.editMessageText(currentSelection + "<br><br>Выберите дату:", {
-        reply_markup: createDateKeyboard(),
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
+    await ctx.editMessageText(currentSelection + "\n\nВыберите дату:", {
+      reply_markup: createDateKeyboard(),
+      parse_mode: "HTML",
+    });
   });
 
   bot.callbackQuery("back_to_dates", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
-
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
-    try {
-      await ctx.editMessageText(currentSelection + "<br><br>Выберите дату:", {
-        reply_markup: createDateKeyboard(),
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
+    await ctx.editMessageText(currentSelection + "\n\nВыберите дату:", {
+      reply_markup: createDateKeyboard(),
+      parse_mode: "HTML",
+    });
   });
 
   bot.callbackQuery("back_to_format", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
-
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
-    try {
-      await ctx.editMessageText(currentSelection + "<br><br>Выберите формат:", {
-        reply_markup: createFormatKeyboard(),
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
+    await ctx.editMessageText(currentSelection + "\n\nВыберите формат:", {
+      reply_markup: createFormatKeyboard(),
+      parse_mode: "HTML",
+    });
   });
 
   bot.callbackQuery("back_to_location", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
 
     if (st.selectedFormat === "ds") {
-      const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-        st.selectedDate
-      )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-        st.selectedLocation
-      )}\n👥 Люди: ---`;
-      await ctx.editMessageText(currentSelection + "<br><br>Выберите формат:", {
+      const currentSelection =
+        `<b>Введенные данные:</b>\n` +
+        `📅 Дата: ${esc(st.selectedDate)}\n` +
+        `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+        `📍 Место: ${esc(st.selectedLocation)}\n` +
+        `👥 Люди: ---`;
+      await ctx.editMessageText(currentSelection + "\n\nВыберите формат:", {
         reply_markup: createFormatKeyboard(),
         parse_mode: "HTML",
       });
     } else {
-      // показать список локаций заново (берём из кэша или заново)
       let locs = st.locations;
       if (!locs?.length) {
         const raw = await fetchDataFromAirtable(
@@ -790,24 +726,21 @@ const initBot = async () => {
         }));
         st.locations = locs;
       }
-      const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-        st.selectedDate
-      )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-        st.selectedLocation
-      )}\n👥 Люди: ---`;
-      await ctx.editMessageText(
-        currentSelection + "<br><br>Выберите локацию:",
-        {
-          reply_markup: createLocationKeyboard(locs),
-          parse_mode: "HTML",
-        }
-      );
+      const currentSelection =
+        `<b>Введенные данные:</b>\n` +
+        `📅 Дата: ${esc(st.selectedDate)}\n` +
+        `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+        `📍 Место: ${esc(st.selectedLocation)}\n` +
+        `👥 Люди: ---`;
+      await ctx.editMessageText(currentSelection + "\n\nВыберите локацию:", {
+        reply_markup: createLocationKeyboard(locs),
+        parse_mode: "HTML",
+      });
     }
   });
 
-  // Обновить даты (сброс выбора)
   bot.callbackQuery("refresh_dates", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -816,36 +749,28 @@ const initBot = async () => {
     st.selectedFormat = "---";
     st.selectedLocation = "---";
 
-    const currentSelection = `<b>Введенные данные:</b>\n📅 Дата: ${esc(
-      st.selectedDate
-    )}\n🤸 Тип тренировки: ${esc(st.selectedFormat)}\n📍 Место: ${esc(
-      st.selectedLocation
-    )}\n👥 Люди: ---`;
-    try {
-      await ctx.editMessageText(currentSelection + "<br><br>Выберите дату:", {
-        reply_markup: createDateKeyboard(),
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    const currentSelection =
+      `<b>Введенные данные:</b>\n` +
+      `📅 Дата: ${esc(st.selectedDate)}\n` +
+      `🤸 Тип тренировки: ${esc(st.selectedFormat)}\n` +
+      `📍 Место: ${esc(st.selectedLocation)}\n` +
+      `👥 Люди: ---`;
+    await ctx.editMessageText(currentSelection + "\n\nВыберите дату:", {
+      reply_markup: createDateKeyboard(),
+      parse_mode: "HTML",
+    });
   });
 
-  // Просмотр PNL
   bot.callbackQuery("view_pnl", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
-    try {
-      await ctx.editMessageText("Выберите дату, с которой начать просмотр:", {
-        reply_markup: createPnlDateKeyboard(),
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    await safeAnswerCb(ctx);
+    await ctx.editMessageText("Выберите дату, с которой начать просмотр:", {
+      reply_markup: createPnlDateKeyboard(),
+      parse_mode: "HTML",
+    });
   });
 
   bot.callbackQuery(/^pnl_date_(\d{2}\.\d{2})$/, async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -857,11 +782,10 @@ const initBot = async () => {
     let pnl = getCache(st, cacheKey);
     if (!pnl) {
       pnl = await fetchPnlDataFromAirtable(username, date);
-      putCache(st, cacheKey, pnl, 2 * 60 * 1000); // NEW: TTL 2 мин на PnL
+      putCache(st, cacheKey, pnl, 2 * 60 * 1000);
     }
     st.pnlDataCache = pnl;
 
-    // CHANGED: суммируем и тренерские, и менторские начисления
     const totalRevenue = pnl.reduce((acc, r) => {
       if (r.coach === username) return acc + (r.expense || 0);
       if (r.secondCoach === username) return acc + (r.secondExpense || 0);
@@ -874,21 +798,17 @@ const initBot = async () => {
       .text("↩️ Вернуться в главное меню", "back_to_start")
       .row();
 
-    try {
-      await ctx.editMessageText(
-        `Общий заработок с ${esc(date)}: ${totalRevenue} ₽`,
-        {
-          reply_markup: kb,
-          parse_mode: "HTML",
-        }
-      );
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    await ctx.editMessageText(
+      `Общий заработок с ${esc(date)}: ${totalRevenue} ₽`,
+      {
+        reply_markup: kb,
+        parse_mode: "HTML",
+      }
+    );
   });
 
   bot.callbackQuery("detailed_breakdown", async (ctx) => {
-    await safeAnswerCb(ctx); // NEW
+    await safeAnswerCb(ctx);
     const id = ctx.from.id;
     ensureState(id);
     const st = userStates[id];
@@ -919,17 +839,13 @@ const initBot = async () => {
       .text("↩️ Вернуться в главное меню", "back_to_start")
       .row();
 
-    try {
-      await ctx.editMessageText(esc(text), {
-        reply_markup: kb,
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      console.error("Error editing message:", err);
-    }
+    await ctx.editMessageText(esc(text), {
+      reply_markup: kb,
+      parse_mode: "HTML",
+    });
   });
 
-  // ----------------------- ГЛОБАЛЬНЫЙ CATCH -----------------------
+  // глобальный catch
   bot.catch((err) => {
     const ctx = err.ctx;
     console.error(`Error while handling update ${ctx.update.update_id}:`, err);
