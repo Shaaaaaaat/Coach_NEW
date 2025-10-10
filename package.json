@@ -1,0 +1,19 @@
+{
+  "name": "tg_bot_new",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@grammyjs/hydrate": "^1.4.1",
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.28.0",
+    "nodemon": "^3.1.4"
+  }
+}
