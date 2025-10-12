@@ -835,10 +835,24 @@ const initBot = async () => {
     st.buttonCounters = {};
 
     const currentSelection = buildSummary(st);
-    await ctx.editMessageText(currentSelection + "\n\nВыберите дату:", {
-      reply_markup: createDateKeyboard(),
-      parse_mode: "HTML",
-    });
+
+    try {
+      await ctx.editMessageText(currentSelection + "\n\nВыберите дату:", {
+        reply_markup: createDateKeyboard(),
+        parse_mode: "HTML",
+      });
+    } catch (e) {
+      // глушим только "message is not modified"
+      if (
+        e instanceof GrammyError &&
+        e.error_code === 400 &&
+        /message is not modified/i.test(e.description || "")
+      ) {
+        // ничего не делаем
+      } else {
+        throw e;
+      }
+    }
   });
 
   // ----- НОВЫЙ поток PNL: два периода -----
