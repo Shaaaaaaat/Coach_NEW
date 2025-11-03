@@ -33,6 +33,7 @@ const allowedUsers = [
   "Lokatororator",
   "Shaaaaaaat",
   "kapitanstar_coach",
+  "fitfrol",
   "Gshakhnazarov",
   "dima_dubinin",
   "e_katrin_al",
