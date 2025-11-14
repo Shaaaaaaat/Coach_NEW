@@ -102,7 +102,7 @@ const freshState = () => ({
   buttonCounters: {}, // {'p_0': 0..n}       — ds
   currentPage: 0,
   selectedDate: "---",
-  selectedFormat: "---", // 'ds' | 'group' | 'personal'
+  selectedFormat: "---", // 'ds' | 'group' | 'personal' | 'split'
   selectedLocation: "---", // meaning
   locations: [], // [{id:'loc_0', label:'...', meaning:'...'}]
   pnlDataCache: [],
@@ -342,6 +342,8 @@ const createFormatKeyboard = () =>
     .row()
     .text("group", "group")
     .row()
+    .text("split", "split")
+    .row()
     .text("personal", "personal")
     .row()
     .text("⬅️ Вернуться", "back_to_dates")
@@ -493,7 +495,7 @@ const initBot = async () => {
     });
   });
 
-  bot.callbackQuery(/^(ds|group|personal)$/, async (ctx) => {
+  bot.callbackQuery(/^(ds|group|personal|split)$/, async (ctx) => {
     await safeAnswerCb(ctx);
     jlog(ctx, "pick_format", { format: ctx.match[0] });
 
@@ -564,28 +566,29 @@ const initBot = async () => {
       loc_label: loc?.label || null,
     });
 
-    // Всегда свежий список имён
-    let names = (
-      await fetchDataFromAirtable(ctx.from.username, airtableUrl)
-    ).map((r) => r.name);
-    names.sort((a, b) => a.localeCompare(b));
+  // Всегда список имён (для group/personal/split)
+  // Всегда свежий список имён
+  let names = (
+    await fetchDataFromAirtable(ctx.from.username, airtableUrl)
+  ).map((r) => r.name);
+  names.sort((a, b) => a.localeCompare(b));
 
-    st.buttonTexts = names;
-    st.buttonIds = names.map((name, i) => ({ id: `p_${i}`, name }));
-    st.buttonStates = Object.fromEntries(
-      st.buttonIds.map(({ id }) => [id, false])
-    );
-    st.buttonCounters = {};
-    st.currentPage = 0;
+  st.buttonTexts = names;
+  st.buttonIds = names.map((name, i) => ({ id: `p_${i}`, name }));
+  st.buttonStates = Object.fromEntries(
+    st.buttonIds.map(({ id }) => [id, false])
+  );
+  st.buttonCounters = {};
+  st.currentPage = 0;
 
-    const { keyboard, currentSelection } = createPeopleKeyboard(
-      id,
-      st.selectedFormat
-    );
-    await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
-      reply_markup: keyboard,
-      parse_mode: "HTML",
-    });
+  const { keyboard, currentSelection } = createPeopleKeyboard(
+    id,
+    st.selectedFormat
+  );
+  await ctx.editMessageText(currentSelection + "\n\nВыберите людей:", {
+    reply_markup: keyboard,
+    parse_mode: "HTML",
+  });
   });
 
   // Выбор людей
