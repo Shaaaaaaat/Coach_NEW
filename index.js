@@ -19,6 +19,9 @@ const AIRTABLE_ACTS = process.env.AIRTABLE_ACTS_TABLE_ID;
 
 // Лучше хранить в .env
 const SECONDARY_CHAT = Number(process.env.SECONDARY_CHAT_ID || -1002203093713);
+const SUPABASE_WORKOUT_MESSAGE_URL =
+  process.env.SUPABASE_WORKOUT_MESSAGE_URL ||
+  "https://ahmwnchujgenbkpjyxdz.supabase.co/functions/v1/process-tg-workout-message";
 
 // Airtable URLs
 const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
@@ -90,6 +93,34 @@ const putCache = (bag, key, val, ttlMs = 5 * 60 * 1000) => {
 const getCache = (bag, key) => {
   const rec = bag._cache?.[key];
   return rec && rec.exp > Date.now() ? rec.val : null;
+};
+
+const sendMessageToSupabase = async (ctx, rawText) => {
+  try {
+    await axios.post(
+      SUPABASE_WORKOUT_MESSAGE_URL,
+      {
+        raw_text: rawText,
+        telegram_message_id: ctx.callbackQuery?.message?.message_id
+          ? String(ctx.callbackQuery.message.message_id)
+          : undefined,
+        telegram_chat_id: ctx.chat?.id ? String(ctx.chat.id) : undefined,
+        telegram_user_id: ctx.from?.id ? String(ctx.from.id) : undefined,
+        telegram_username: ctx.from?.username || undefined,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+        },
+        timeout: 5000,
+      }
+    );
+  } catch (error) {
+    console.error(
+      "Error sending message to Supabase:",
+      error?.response?.data || error?.message || error
+    );
+  }
 };
 
 // ----------------------- СОСТОЯНИЕ -----------------------
@@ -342,9 +373,9 @@ const createFormatKeyboard = () =>
     .row()
     .text("group", "group")
     .row()
-    .text("split", "split")
-    .row()
     .text("personal", "personal")
+    .row()
+    .text("split", "split")
     .row()
     .text("⬅️ Вернуться", "back_to_dates")
     .row();
@@ -724,6 +755,8 @@ const initBot = async () => {
       format,
       location: format === "ds" ? null : location,
     });
+
+    void sendMessageToSupabase(ctx, responseText);
 
     try {
       await ctx.editMessageText(esc(responseText), { parse_mode: "HTML" });
