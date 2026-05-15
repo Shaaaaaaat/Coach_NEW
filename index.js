@@ -22,6 +22,7 @@ const SECONDARY_CHAT = Number(process.env.SECONDARY_CHAT_ID || -1002203093713);
 const SUPABASE_WORKOUT_MESSAGE_URL =
   process.env.SUPABASE_WORKOUT_MESSAGE_URL ||
   "https://ahmwnchujgenbkpjyxdz.supabase.co/functions/v1/process-tg-workout-message";
+const TG_WORKOUT_BOT_SECRET = process.env.TG_WORKOUT_BOT_SECRET;
 
 // Airtable URLs
 const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
@@ -111,6 +112,7 @@ const sendMessageToSupabase = async (ctx, rawText) => {
       {
         headers: {
           "Content-Type": "application/json",
+          "x-bot-secret": TG_WORKOUT_BOT_SECRET,
         },
         timeout: 5000,
       }
