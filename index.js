@@ -114,7 +114,7 @@ const sendMessageToSupabase = async (ctx, rawText) => {
           "Content-Type": "application/json",
           "x-bot-secret": TG_WORKOUT_BOT_SECRET,
         },
-        timeout: 5000,
+        timeout: 60000,
       }
     );
   } catch (error) {
