@@ -1124,13 +1124,17 @@ const initBot = async () => {
   // Глобальный catch
   bot.catch((err) => {
     const ctx = err.ctx;
-    console.error(`Error while handling update ${ctx.update.update_id}:`, err);
+    console.error("Error while handling update:", {
+      update_id: ctx.update.update_id,
+    });
     if (err instanceof GrammyError) {
       console.error("Error in request:", err.description);
     } else if (err instanceof HttpError) {
-      console.error("Could not contact Telegram:", err);
+      console.error("Could not contact Telegram:", getSafeTelegramError(err));
     } else {
-      console.error("Unknown error:", err);
+      console.error("Unknown error:", {
+        message: sanitizeLogText(err?.message || err),
+      });
     }
   });
 };
