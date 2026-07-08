@@ -1136,13 +1136,50 @@ const initBot = async () => {
 };
 
 // ----------------------- ЗАПУСК (универсальный) -----------------------
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const sanitizeLogText = (value = "") =>
+  String(value).replace(/bot\d+:[A-Za-z0-9_-]+/g, "bot<redacted>");
+
+const getSafeTelegramError = (error) => ({
+  message: sanitizeLogText(error?.message || "Telegram API request failed"),
+  code: error?.error?.code || error?.code || null,
+});
+
+const deleteWebhookWithRetry = async (attempts = 3, delayMs = 3000) => {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await bot.api.deleteWebhook({ drop_pending_updates: true });
+      return;
+    } catch (error) {
+      const safeError = getSafeTelegramError(error);
+      console.error("deleteWebhook failed:", {
+        attempt,
+        attempts,
+        code: safeError.code,
+        message: safeError.message,
+      });
+
+      if (attempt === attempts) {
+        throw new Error(
+          `deleteWebhook failed after ${attempts} attempts: ${
+            safeError.code || safeError.message
+          }`
+        );
+      }
+
+      await wait(delayMs);
+    }
+  }
+};
+
 (async () => {
   await initBot();
 
   const mode = (process.env.BOT_MODE || "polling").toLowerCase();
 
   if (mode === "polling") {
-    await bot.api.deleteWebhook({ drop_pending_updates: true });
+    await deleteWebhookWithRetry();
     await bot.start();
     console.log("Bot started in POLLING mode");
   } else if (mode === "webhook") {
