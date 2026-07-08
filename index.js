@@ -26,6 +26,9 @@ const TG_WORKOUT_BOT_SECRET = process.env.TG_WORKOUT_BOT_SECRET;
 const SUPABASE_URL = process.env.SUPABASE_URL?.replace(/\/$/, "");
 const SUPABASE_READ_KEY =
   process.env.SUPABASE_READ_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const IDC_ERRORS_BOT_TOKEN = process.env.IDC_ERRORS_BOT_TOKEN;
+const IDC_ERRORS_CHAT_ID = process.env.IDC_ERRORS_CHAT_ID;
+const SUPABASE_WORKOUT_MESSAGE_TIMEOUT_MS = 20000;
 
 // Airtable URLs
 const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
@@ -70,7 +73,7 @@ const safeAnswerCb = async (ctx) => {
     await ctx.answerCallbackQuery();
   } catch (e) {
     if (!(e instanceof GrammyError && e.error_code === 400)) {
-      console.error("answerCallbackQuery error:", e);
+      console.error("answerCallbackQuery error:", getSafeApiError(e));
     }
   }
 };
@@ -133,9 +136,29 @@ const HARDCODED_LOCATIONS = [
   },
 ];
 
+const truncateLogText = (value = "", maxLength = 500) => {
+  const text = sanitizeLogText(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+};
+
+const getSafeApiError = (error) => {
+  const responseData = error?.response?.data;
+  const responseError =
+    typeof responseData === "string"
+      ? responseData
+      : responseData?.error || responseData?.message || null;
+
+  return {
+    message: truncateLogText(error?.message || "API request failed"),
+    code: error?.code || error?.error?.code || null,
+    status: error?.response?.status || null,
+    response_error: responseError ? truncateLogText(responseError) : null,
+  };
+};
+
 const sendMessageToSupabase = async (ctx, rawText) => {
   try {
-    await axios.post(
+    const response = await axios.post(
       SUPABASE_WORKOUT_MESSAGE_URL,
       {
         raw_text: rawText,
@@ -151,14 +174,83 @@ const sendMessageToSupabase = async (ctx, rawText) => {
           "Content-Type": "application/json",
           "x-bot-secret": TG_WORKOUT_BOT_SECRET,
         },
-        timeout: 60000,
+        timeout: SUPABASE_WORKOUT_MESSAGE_TIMEOUT_MS,
       }
     );
+
+    if (response.data?.ok === false) {
+      return {
+        ok: false,
+        status: response.status,
+        error: {
+          message: truncateLogText(
+            response.data?.error || "Supabase returned ok=false"
+          ),
+          code: null,
+          status: response.status,
+          response_error: response.data?.error
+            ? truncateLogText(response.data.error)
+            : null,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      status: response.status,
+      data: {
+        ok: response.data?.ok,
+        processed: response.data?.processed ?? null,
+      },
+    };
   } catch (error) {
-    console.error(
-      "Error sending message to Supabase:",
-      error?.response?.data || error?.message || error
+    return {
+      ok: false,
+      status: error?.response?.status || null,
+      error: getSafeApiError(error),
+    };
+  }
+};
+
+const sendIdcErrorAlert = async (ctx, rawText, supabaseResult, meta = {}) => {
+  if (!IDC_ERRORS_BOT_TOKEN || !IDC_ERRORS_CHAT_ID) {
+    console.warn("IDC error alert skipped:", {
+      reason: "missing_idc_error_alert_env",
+      has_token: Boolean(IDC_ERRORS_BOT_TOKEN),
+      has_chat_id: Boolean(IDC_ERRORS_CHAT_ID),
+    });
+    return;
+  }
+
+  try {
+    const safeError = supabaseResult?.error || {};
+    const message = [
+      "supabase_workout_message_failed",
+      `username: ${ctx.from?.username || null}`,
+      `user_id: ${ctx.from?.id || null}`,
+      `chat_id: ${ctx.chat?.id || null}`,
+      `message_id: ${ctx.callbackQuery?.message?.message_id || null}`,
+      `date: ${meta.date || null}`,
+      `format: ${meta.format || null}`,
+      `location: ${meta.location || null}`,
+      `status: ${supabaseResult?.status || safeError.status || null}`,
+      `code: ${safeError.code || null}`,
+      `error: ${safeError.response_error || safeError.message || null}`,
+      "",
+      "raw_text:",
+      truncateLogText(rawText, 2500),
+    ].join("\n");
+
+    await axios.post(
+      `https://api.telegram.org/bot${IDC_ERRORS_BOT_TOKEN}/sendMessage`,
+      {
+        chat_id: IDC_ERRORS_CHAT_ID,
+        text: message,
+      },
+      { timeout: 10000 }
     );
+  } catch (error) {
+    console.error("IDC error alert failed:", getSafeApiError(error));
   }
 };
 
@@ -550,7 +642,7 @@ const processQueue = async () => {
       try {
         await processMessage(msg);
       } catch (e) {
-        console.error("processMessage error:", e);
+        console.error("processMessage error:", getSafeApiError(e));
       }
       await new Promise((r) => setTimeout(r, 5000));
     }
@@ -839,18 +931,36 @@ const initBot = async () => {
       location: format === "ds" ? null : location,
     });
 
-    void sendMessageToSupabase(ctx, responseText);
+    const supabaseResult = await sendMessageToSupabase(ctx, responseText);
+    if (supabaseResult.ok) {
+      jlog(ctx, "supabase_send_success", {
+        status: supabaseResult.status,
+        processed: supabaseResult.data?.processed ?? null,
+      });
+    } else {
+      jlog(ctx, "supabase_send_failure", {
+        status: supabaseResult.status,
+        code: supabaseResult.error?.code || null,
+        message: supabaseResult.error?.message || null,
+        response_error: supabaseResult.error?.response_error || null,
+      });
+      await sendIdcErrorAlert(ctx, responseText, supabaseResult, {
+        date,
+        format,
+        location: format === "ds" ? null : location,
+      });
+    }
 
     try {
       await ctx.editMessageText(esc(responseText), { parse_mode: "HTML" });
     } catch (err) {
-      console.error("Error editing message:", err);
+      console.error("Error editing message:", getSafeApiError(err));
     }
 
     try {
       await bot.api.sendMessage(SECONDARY_CHAT, responseText.trim());
     } catch (err) {
-      console.error("Error sending to secondary chat:", err);
+      console.error("Error sending to secondary chat:", getSafeApiError(err));
     }
 
     messageQueue.push({ ctx, responseText, date, format, location });
