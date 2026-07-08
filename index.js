@@ -23,6 +23,9 @@ const SUPABASE_WORKOUT_MESSAGE_URL =
   process.env.SUPABASE_WORKOUT_MESSAGE_URL ||
   "https://ahmwnchujgenbkpjyxdz.supabase.co/functions/v1/process-tg-workout-message";
 const TG_WORKOUT_BOT_SECRET = process.env.TG_WORKOUT_BOT_SECRET;
+const SUPABASE_URL = process.env.SUPABASE_URL?.replace(/\/$/, "");
+const SUPABASE_READ_KEY =
+  process.env.SUPABASE_READ_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 // Airtable URLs
 const airtableUrl = `https://api.airtable.com/v0/${AIRTABLE_BASE}/${AIRTABLE_TABLE}`;
@@ -95,6 +98,40 @@ const getCache = (bag, key) => {
   const rec = bag._cache?.[key];
   return rec && rec.exp > Date.now() ? rec.val : null;
 };
+
+const HARDCODED_LOCATIONS = [
+  {
+    place: "Spirit",
+    meaning: "spirit",
+    coaches: ["dima_dubinin", "fitfrol"],
+  },
+  {
+    place: "YouCan",
+    meaning: "youcan",
+    coaches: ["Lokatororator", "kapitanstar_coach"],
+  },
+  {
+    place: "open",
+    meaning: "park",
+    coaches: [
+      "Gshakhnazarov",
+      "Lokatororator",
+      "kapitanstar_coach",
+      "Shaaaaaaat",
+      "dima_dubinin",
+    ],
+  },
+  {
+    place: "HK",
+    meaning: "hellskitchen",
+    coaches: ["dima_dubinin"],
+  },
+  {
+    place: "elfit",
+    meaning: "elfit",
+    coaches: ["Lokatororator", "Gshakhnazarov"],
+  },
+];
 
 const sendMessageToSupabase = async (ctx, rawText) => {
   try {
@@ -190,7 +227,52 @@ const buildSummary = (st) => {
 };
 
 // ----------------------- AIRTABLE -----------------------
+const fetchClientsFromSupabase = async (username) => {
+  if (!username) return [];
+  if (!SUPABASE_URL || !SUPABASE_READ_KEY) {
+    throw new Error(
+      "SUPABASE_URL and SUPABASE_READ_KEY or SUPABASE_SERVICE_ROLE_KEY are required"
+    );
+  }
+
+  const response = await axios.get(`${SUPABASE_URL}/rest/v1/clients`, {
+    headers: {
+      apikey: SUPABASE_READ_KEY,
+      Authorization: `Bearer ${SUPABASE_READ_KEY}`,
+    },
+    params: {
+      select: "id,fio,coach,status,is_active",
+      coach: `eq.${username}`,
+      is_active: "eq.true",
+      status: "eq.active",
+      order: "fio.asc",
+    },
+  });
+
+  return response.data
+    .filter((client) => client.fio)
+    .map((client) => ({
+      name: client.fio,
+    }));
+};
+
+const getHardcodedLocations = (username) =>
+  HARDCODED_LOCATIONS.filter((loc) => loc.coaches.includes(username)).map(
+    (loc) => ({
+      place: loc.place,
+      meaning: loc.meaning,
+    })
+  );
+
 const fetchDataFromAirtable = async (username, url) => {
+  if (url === airtableUrl) {
+    return fetchClientsFromSupabase(username);
+  }
+
+  if (url === airtablePlacesUrl) {
+    return getHardcodedLocations(username);
+  }
+
   let records = [];
   let offset = null;
   do {
@@ -365,7 +447,6 @@ const createDateKeyboard = () => {
   for (let i = 4; i > 0; i--) kb.text(dates[i], dates[i]);
   kb.row();
   kb.text("🔄 Обновить даты", "refresh_dates").row();
-  kb.text("💰 Посмотреть начисления", "view_pnl").row();
   return kb;
 };
 
