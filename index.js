@@ -106,7 +106,7 @@ const HARDCODED_LOCATIONS = [
   {
     place: "Spirit",
     meaning: "spirit",
-    coaches: ["dima_dubinin", "fitfrol"],
+    coaches: ["dima_dubinin", "fitfrol", "Lokatororator"],
   },
   {
     place: "YouCan",
